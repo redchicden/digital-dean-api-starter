@@ -11,5 +11,14 @@ TAG_BYTES = 16
 
 
 def validate_profile(algorithm: str, key: bytes, nonce: bytes) -> None:
-    """TODO: відхилити невідомий алгоритм і неправильні довжини."""
-    raise NotImplementedError("Implement profile validation")
+    expected_size = KEY_BYTES.get(algorithm)
+
+    if expected_size is None:
+        raise ValueError("Unsupported algorithm")
+
+    if len(key) != expected_size:
+        raise ValueError("Invalid key length")
+
+    if len(nonce) != NONCE_BYTES:
+        raise ValueError("Invalid nonce length")
+
