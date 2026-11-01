@@ -1,3 +1,5 @@
+from app.api.asymmetric_lab import router as asymmetric_lab_router
+
 from fastapi import FastAPI
 
 from app.api.crypto_lab import router as crypto_lab_router
@@ -11,7 +13,7 @@ from app.security.keys import create_process_key
 
 app = FastAPI(
     title="Digital Dean API",
-    version="0.2.0",
+    version="0.3.0",
     description="Навчальний API системи «Цифровий деканат»",
 ) 
 app.state.process_key = create_process_key()
@@ -27,3 +29,5 @@ app.include_router(students_router)
 app.include_router(secure_notes_router)
 
 app.include_router(crypto_lab_router)
+
+app.include_router(asymmetric_lab_router)
