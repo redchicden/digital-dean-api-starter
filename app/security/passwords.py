@@ -29,20 +29,41 @@ def password_bytes(password: str, *, registration: bool = False) -> bytes:
 
 
 def make_password_record(password: str) -> tuple[str, str]:
-    """Return (password_record, salt_hex), never the cleartext password.
-
-    TODO: use a fresh secrets.token_bytes(SALT_BYTES), PBKDF2-HMAC-SHA256,
-    and lowercase hex. Record format is pbkdf2_sha256$600000$<64 hex chars>.
-    The salt is stored separately as exactly 32 lowercase hex characters.
-    """
-    raise NotImplementedError("TODO: create a salted password record")
+    """Return (password_record, salt_hex), never the cleartext password."""
+    raw_password = password_bytes(password, registration=True)
+    salt = secrets.token_bytes(SALT_BYTES)
+    if not isinstance(salt, bytes) or len(salt) != SALT_BYTES:
+        raise ValueError("salt generator returned invalid data")
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", raw_password, salt, ITERATIONS, dklen=DERIVED_BYTES
+    )
+    record = f"{ALGORITHM}${ITERATIONS}${derived.hex()}"
+    return record, salt.hex()
 
 
 def verify_password(password: str, record: str, salt_hex: str) -> bool:
-    """TODO: bounded strict parsing, fixed supported profile, compare_digest.
+    """Verify only the fixed supported profile; malformed values return False."""
+    if not isinstance(record, str) or not isinstance(salt_hex, str):
+        return False
 
-    Return False for wrong passwords and malformed/unsupported stored values.
-    Do not run the KDF with an arbitrary iteration count from the database.
-    Do not trim or case-convert the password. Never log these arguments.
-    """
-    raise NotImplementedError("TODO: verify a password without secret output")
+    prefix = f"{ALGORITHM}${ITERATIONS}$"
+    if len(record) != len(prefix) + DERIVED_BYTES * 2 or not record.startswith(prefix):
+        return False
+    digest_hex = record[len(prefix):]
+    if any(char not in "0123456789abcdef" for char in digest_hex):
+        return False
+    if len(salt_hex) != SALT_BYTES * 2 or any(
+            char not in "0123456789abcdef" for char in salt_hex):
+        return False
+
+    try:
+        raw_password = password_bytes(password)
+    except ValueError:
+        return False
+
+    salt = bytes.fromhex(salt_hex)
+    expected = bytes.fromhex(digest_hex)
+    actual = hashlib.pbkdf2_hmac(
+        "sha256", raw_password, salt, ITERATIONS, dklen=DERIVED_BYTES
+    )
+    return hmac.compare_digest(actual, expected)
