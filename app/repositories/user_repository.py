@@ -1,5 +1,6 @@
 """Student task: persistent account operations on separate short connections."""
 from pathlib import Path
+import sqlite3
 
 from app.db.connection import open_database, write_transaction
 from app.schemas.user_account import UserCreate, UserPublic
@@ -23,34 +24,78 @@ class UserRepository:
         self.database_path = Path(database_path)
 
     def register_user(self, data: UserCreate) -> UserPublic:
-        """TODO: hash, parameterized INSERT, transaction, safe output.
-
-        Do not assign privileged roles or accept client id/hash/salt fields.
-        Return only id, name, email, login, status_id. Map UNIQUE conflicts to
-        UserConflict; preserve the database on failure. No shared connection.
-        """
-        raise NotImplementedError("TODO: register a persistent user")
+        """Create a password-protected account and return its public fields."""
+        password_record, salt = make_password_record(data.password.get_secret_value())
+        try:
+            with open_database(self.database_path) as connection:
+                with write_transaction(connection):
+                    cursor = connection.execute(
+                        'INSERT INTO "user" (name, email, login, password, salt, status_id) '
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (data.name, str(data.email), data.login, password_record, salt,
+                         data.status_id),
+                    )
+                    user_id = cursor.lastrowid
+                    row = connection.execute(
+                        'SELECT id, name, email, login, status_id FROM "user" WHERE id = ?',
+                        (user_id,),
+                    ).fetchone()
+                    return UserPublic.model_validate(dict(row))
+        except sqlite3.IntegrityError as exc:
+            message = str(exc)
+            if (getattr(exc, "sqlite_errorname", None) == "SQLITE_CONSTRAINT_UNIQUE"
+                    and ("user.login" in message or "user.email" in message)):
+                raise UserConflict from None
+            raise
 
     def delete_user(self, user_id: int) -> None:
-        """TODO: DELETE in one transaction; missing -> UserNotFound.
+        """Physically delete an unreferenced user; preserve referenced data."""
+        with open_database(self.database_path) as connection:
+            with write_transaction(connection):
+                exists = connection.execute(
+                    'SELECT 1 FROM "user" WHERE id = ?', (user_id,)
+                ).fetchone()
+                if exists is None:
+                    raise UserNotFound
 
-        A grade reference to this user as student OR teacher -> UserReferenced.
-        Check user existence and grade references inside the SAME write
-        transaction as DELETE; retain FK enforcement as the database backstop.
-        Roll back the whole transaction, including any role cascades. Never
-        manually delete grades to make the account DELETE succeed.
-        """
-        raise NotImplementedError("TODO: delete an unreferenced user")
+                referenced = connection.execute(
+                    "SELECT 1 FROM grade "
+                    "WHERE student_id = ? OR teacher_id = ? LIMIT 1",
+                    (user_id, user_id),
+                ).fetchone()
+                if referenced is not None:
+                    raise UserReferenced
+
+                try:
+                    connection.execute('DELETE FROM "user" WHERE id = ?', (user_id,))
+                except sqlite3.IntegrityError as exc:
+                    if getattr(exc, "sqlite_errorname", "").startswith("SQLITE_CONSTRAINT_FOREIGNKEY"):
+                        raise UserReferenced from None
+                    raise
 
     def block_user(self, user_id: int) -> UserPublic:
-        """TODO: set status_id=2, preserve other fields; repeat is safe."""
-        raise NotImplementedError("TODO: persist the blocked status")
+        """Set blocked status without changing the account's other fields."""
+        with open_database(self.database_path) as connection:
+            with write_transaction(connection):
+                cursor = connection.execute(
+                    'UPDATE "user" SET status_id = ? WHERE id = ?', (2, user_id)
+                )
+                if cursor.rowcount == 0:
+                    raise UserNotFound
+                row = connection.execute(
+                    'SELECT id, name, email, login, status_id FROM "user" WHERE id = ?',
+                    (user_id,),
+                ).fetchone()
+                return UserPublic.model_validate(dict(row))
 
     def login(self, login: str, password: str) -> bool:
-        """TODO: parameterized lookup, verify password AND status_id == 1.
-
-        Unknown login, wrong password, malformed stored record, inactive or
-        blocked user -> False. Do not return the row, account id or secrets.
-        No session or access token is issued by this educational operation.
-        """
-        raise NotImplementedError("TODO: check credentials and active status")
+        """Return whether these credentials belong to an active account."""
+        with open_database(self.database_path) as connection:
+            row = connection.execute(
+                'SELECT password, salt, status_id FROM "user" WHERE login = ?',
+                (login,),
+            ).fetchone()
+        if row is None:
+            return False
+        password_matches = verify_password(password, row["password"], row["salt"])
+        return row["status_id"] == 1 and password_matches
