@@ -22,23 +22,42 @@ Repository = Annotated[UserRepository, Depends(get_user_repository)]
 UserId = Annotated[int, Path(gt=0, le=9_223_372_036_854_775_807)]
 
 
-# TODO: add decorators with the agreed paths, status codes and response models.
-# TODO: UserConflict -> safe 409, UserNotFound -> safe 404,
-# UserReferenced -> safe 409, sqlite3.Error -> safe 500.
-# Never include exception text, SQL, path, request body, hash or salt in errors.
-# Route validation redaction is already provided by SensitiveRoute.
-
+@router.post("/api/v1/users", response_model=UserPublic, status_code=201)
 def register_user(data: UserCreate, repository: Repository) -> UserPublic:
-    raise NotImplementedError("TODO: POST /api/v1/users -> 201")
+    try:
+        return repository.register_user(data)
+    except UserConflict:
+        raise HTTPException(status_code=409, detail="user already exists") from None
+    except sqlite3.Error:
+        raise HTTPException(status_code=500, detail="database unavailable") from None
 
 
+@router.delete("/api/v1/users/{user_id}", status_code=204)
 def delete_user(user_id: UserId, repository: Repository) -> Response:
-    raise NotImplementedError("TODO: DELETE /api/v1/users/{user_id} -> empty 204")
+    try:
+        repository.delete_user(user_id)
+    except UserNotFound:
+        raise HTTPException(status_code=404, detail="user not found") from None
+    except UserReferenced:
+        raise HTTPException(status_code=409, detail="user has grade references") from None
+    except sqlite3.Error:
+        raise HTTPException(status_code=500, detail="database unavailable") from None
+    return Response(status_code=204)
 
 
+@router.patch("/api/v1/users/{user_id}/block", response_model=UserPublic)
 def block_user(user_id: UserId, repository: Repository) -> UserPublic:
-    raise NotImplementedError("TODO: PATCH /api/v1/users/{user_id}/block -> 200")
+    try:
+        return repository.block_user(user_id)
+    except UserNotFound:
+        raise HTTPException(status_code=404, detail="user not found") from None
+    except sqlite3.Error:
+        raise HTTPException(status_code=500, detail="database unavailable") from None
 
 
+@router.post("/api/v1/auth/login", response_model=bool)
 def login(data: LoginRequest, repository: Repository) -> bool:
-    raise NotImplementedError("TODO: POST /api/v1/auth/login -> JSON boolean")
+    try:
+        return repository.login(data.login, data.password.get_secret_value())
+    except sqlite3.Error:
+        raise HTTPException(status_code=500, detail="database unavailable") from None
