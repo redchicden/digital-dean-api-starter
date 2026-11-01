@@ -106,7 +106,7 @@ def test_rejects_extra_secret_field():
     (b'{"schema_version":1,"schema_version":1}', 500, "hash report invalid"),
     (b'{"n":NaN}', 500, "hash report invalid"),
     (b" " * 1048577, 500, "hash report invalid"),
-])
+], ids=["missing", "invalid-json", "duplicate-key", "nan", "oversized"])
 def test_bounded_reader_safe_errors(tmp_path, monkeypatch, content, status, detail):
     path = tmp_path / "report.json"
     if content is not None:

@@ -1,7 +1,10 @@
 """Структура звіту; змістову перевірку validate_report реалізує студент."""
+from datetime import datetime, timezone
+from math import isclose, isfinite
 from typing import Annotated, Literal
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt
-from app.security.hashing.profiles import AlgorithmID, Mode
+from app.security.hashing.profiles import (AlgorithmID, CHECK_NAMES, PAYLOAD_SIZES,
+                                           PROFILES, Mode)
 
 
 def _exact_int(value):
@@ -109,8 +112,66 @@ class HashResponse(HashReport):
 
 
 def validate_report(data: object) -> HashReport:
-    # TODO HashReport.model_validate, then exact coverage and unique tuples.
-    # TODO allowed unavailable states, real UTC date, sizes, digest lengths,
-    # repeats, throughput, avalanche bounds/fractions, and check coverage.
-    # A passed=False check is valid diagnostic data and must not disappear.
-    raise NotImplementedError("Implement complete hash report validation")
+    report = HashReport.model_validate(data)
+
+    try:
+        created = datetime.fromisoformat(report.created_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise ValueError("created_at must be a valid timezone-aware timestamp") from None
+    if created.tzinfo is None or created.utcoffset() is None:
+        raise ValueError("created_at must include a timezone")
+    if created.utcoffset().total_seconds() != 0:
+        raise ValueError("created_at must be UTC")
+
+    if report.parameters.sizes != list(PAYLOAD_SIZES):
+        raise ValueError("parameters.sizes must match the fixed payload sizes")
+
+    algorithms = {row.algorithm: row for row in report.algorithms}
+    if len(algorithms) != len(PROFILES) or set(algorithms) != set(PROFILES):
+        raise ValueError("algorithms must contain every profile exactly once")
+    for algorithm, status in algorithms.items():
+        if status.available:
+            if status.reason is not None or not status.implementation:
+                raise ValueError("available profiles require implementation and no reason")
+        elif not PROFILES[algorithm].legacy:
+            raise ValueError("required profiles cannot be unavailable")
+        elif status.reason != "not_available_in_environment" or status.implementation is not None:
+            raise ValueError("unavailable legacy profiles require the explicit unavailable state")
+
+    available = {name for name, status in algorithms.items() if status.available}
+    expected_results = {(a, size, mode) for a in available for size in PAYLOAD_SIZES
+                        for mode in ("whole", "chunked")}
+    result_keys = [(r.algorithm, r.payload_bytes, r.mode) for r in report.results]
+    if len(result_keys) != len(set(result_keys)) or set(result_keys) != expected_results:
+        raise ValueError("results must cover each available profile, size, and mode exactly once")
+    for result in report.results:
+        profile = PROFILES[result.algorithm]
+        if result.digest_bytes != profile.digest_bytes:
+            raise ValueError("result digest length does not match its profile")
+        expected_repeats = 100 if result.payload_bytes == 1048576 else 1000
+        if result.repeats != expected_repeats:
+            raise ValueError("result repeats do not match the fixed experiment")
+        expected_rate = result.payload_bytes * 1e9 / (result.median_ns * (2**20))
+        if not isclose(result.throughput_mib_s, expected_rate, rel_tol=1e-6, abs_tol=1e-12):
+            raise ValueError("throughput is inconsistent with payload size and median")
+
+    avalanche_keys = [row.algorithm for row in report.avalanche]
+    if len(avalanche_keys) != len(set(avalanche_keys)) or set(avalanche_keys) != available:
+        raise ValueError("avalanche must contain each available profile exactly once")
+    for row in report.avalanche:
+        bits = PROFILES[row.algorithm].digest_bytes * 8
+        if row.digest_bits != bits or row.input_bytes != 1024 or row.trials != 100:
+            raise ValueError("avalanche parameters do not match the fixed experiment")
+        if row.min_flipped_bits > row.max_flipped_bits or row.max_flipped_bits > bits:
+            raise ValueError("avalanche bit bounds are inconsistent")
+        if not row.min_flipped_bits <= row.mean_flipped_bits <= row.max_flipped_bits:
+            raise ValueError("avalanche mean is outside observed bounds")
+        if not isfinite(row.mean_fraction) or not isclose(
+                row.mean_fraction, row.mean_flipped_bits / bits, rel_tol=1e-9, abs_tol=1e-12):
+            raise ValueError("avalanche fraction is inconsistent with its mean")
+
+    check_keys = [(row.algorithm, row.name) for row in report.checks]
+    expected_checks = {(a, name) for a in available for name in CHECK_NAMES}
+    if len(check_keys) != len(set(check_keys)) or set(check_keys) != expected_checks:
+        raise ValueError("checks must cover every available profile and check exactly once")
+    return report
