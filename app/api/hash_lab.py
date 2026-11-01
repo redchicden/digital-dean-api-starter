@@ -1,9 +1,10 @@
 """Новий маршрутизатор: зареєструйте GET і підключіть до наявного app/main.py."""
 import json
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import ValidationError
 from app.schemas.hash_report import HashReport, HashResponse, validate_report
+from app.security.hashing.profiles import AlgorithmID
 
 router = APIRouter(prefix="/api/v1/lab/crypto", tags=["hash-lab"])
 REPORT_PATH = Path(__file__).resolve().parents[2] / "results/practice-04/report.json"
@@ -38,8 +39,13 @@ def load_report() -> HashReport:
         raise HTTPException(500, "hash report invalid") from exc
 
 
-def get_hash_benchmark_results() -> HashResponse:
-    # TODO @router.get("/hash-benchmark-results", response_model=HashResponse)
-    # TODO full validation BEFORE filtering and the student's own variant.
-    # No arbitrary path, POST benchmark, input documents or benchmark imports.
-    raise NotImplementedError("Implement the new hash results API operation")
+@router.get("/hash-benchmark-results", response_model=HashResponse)
+def get_hash_benchmark_results(
+    algorithm: AlgorithmID | None = Query(default=None),
+) -> HashResponse:
+    report = load_report()
+    data = report.model_dump()
+    if algorithm is not None:
+        data["results"] = [row for row in data["results"]
+                           if row["algorithm"] == algorithm]
+    return HashResponse.model_validate(data)
